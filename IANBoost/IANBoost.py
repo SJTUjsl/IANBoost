@@ -33,6 +33,7 @@ try:
         EnsureTyped,
         ScaleIntensityRanged,
     )
+    import onnxruntime as ort
 except:
     try:
         import PyTorchUtils
@@ -45,6 +46,8 @@ except:
     except:
         pass   
     slicer.util.pip_install('monai torch torchvision torchaudio')
+    slicer.util.pip_install('nibabel')
+    slicer.util.pip_install('onnxruntime')
     from PIL import Image
     import torch
     import torch.nn as nn
@@ -60,6 +63,7 @@ except:
         EnsureTyped,
         ScaleIntensityRanged,
     )
+    import onnxruntime as ort
 
 #
 # IANBoost
@@ -399,7 +403,7 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
 
 
     def infer_mandible(self, image):
-        model_path = os.path.join(os.path.dirname(__file__), "Resources/mandible.pth")
+        model_path = os.path.join(os.path.dirname(__file__), "Resources/mandible.onnx")
 
         # Define transforms for image and segmentation
         transforms = Compose(
@@ -415,27 +419,52 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         # Add batch dimension
         img = transformed_data["image"] # (H, W, D)
         # meta_data = transformed_data["image_meta_dict"]
-        img = img.unsqueeze(0) 
-        img = img.unsqueeze(0) # (B, C, H, W, D)
 
         post_trans = Compose([Activations(softmax=True), AsDiscrete(threshold=0.5, argmax=True)])
-        model = UNet(
-            spatial_dims=3,
-            in_channels=1,
-            out_channels=2,  # label + background
-            channels=(16, 32, 64, 128, 256),
-            strides=(2, 2, 2, 2),
-            num_res_units=2,
-        )
+        pred = sliding_window_infer(img, model_path, window_size=(64, 64, 64), overlap=0.25)
+        pred = post_trans(pred).squeeze()
+        print(pred.shape)
+        return pred
+    
+def sliding_window_infer(image, model_path, window_size=(64, 64, 64), overlap=0.5):
+    """
+    Perform sliding window inference on a large image using an ONNX model.
 
-        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-        model.eval()
-        print("start inferencing...")
-        pred = sliding_window_inference(img, roi_size=(64, 64, 64), sw_batch_size=1, predictor=model, overlap=0.25)
-        print("inferencing done")
-        pred = post_trans(pred)
-        # print(meta_data)
-        return pred[0, 1, :, :, :]
+    :param image: The input image as a numpy array (shape [H, W, D]).
+    :param model_path: Path to the ONNX model file.
+    :param window_size: The size of the sliding window (default is (64, 64, 64)).
+    :param overlap: The fraction of overlap between windows (default is 0.5).
+    :return: The combined prediction as a numpy array.
+    """
+    # Load the ONNX model
+    session = ort.InferenceSession(model_path)
+
+    # Calculate step size based on overlap
+    step_size = [int(window_size[i] * (1 - overlap)) for i in range(3)]
+
+    # Determine model output shape with a dummy run
+    output_channels = 2
+
+    # Prepare output array
+    output_shape = (output_channels,) + image.shape
+    combined_output = np.zeros(output_shape, dtype=np.float32)
+    counts = np.zeros(image.shape, dtype=np.float32)
+
+    # Sliding window inference
+    for z in range(0, image.shape[2] - window_size[2] + 1, step_size[2]):
+        for y in range(0, image.shape[1] - window_size[1] + 1, step_size[1]):
+            for x in range(0, image.shape[0] - window_size[0] + 1, step_size[0]):
+                window = image[x:x + window_size[0], y:y + window_size[1], z:z + window_size[2]]
+                input_data = np.expand_dims(window, axis=(0, 1))  # Shape: [1, 1, D, H, W]
+
+                output = session.run(None, {session.get_inputs()[0].name: input_data})[0]
+                combined_output[:, x:x + window_size[0], y:y + window_size[1], z:z + window_size[2]] += output.squeeze()
+                counts[x:x + window_size[0], y:y + window_size[1], z:z + window_size[2]] += 1
+
+    # Normalize by counts
+    combined_output /= np.maximum(counts, 1)
+
+    return combined_output
 #
 # IANBoostTest
 #
@@ -487,5 +516,6 @@ class IANBoostTest(ScriptedLoadableModuleTest):
 
         # Test algorithm with non-inverted threshold
         logic.process(inputVolume, outputVolume, True)
+        print("Done")
         self.delayDisplay("Test passed")
 
