@@ -421,7 +421,7 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         # meta_data = transformed_data["image_meta_dict"]
 
         post_trans = Compose([Activations(softmax=True), AsDiscrete(threshold=0.5, argmax=True)])
-        pred = sliding_window_infer(img, model_path, window_size=(64, 64, 64), overlap=0.25)
+        pred = sliding_window_infer(img, model_path, window_size=(64, 64, 64), overlap=0.5)
         pred = post_trans(pred).squeeze()
         print(pred.shape)
         return pred
