@@ -14,6 +14,7 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
+import slicer.logic
 
 from slicer import vtkMRMLScalarVolumeNode, vtkMRMLSegmentationNode
 try:
@@ -183,7 +184,6 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode = None
         self._updatingGUIFromParameterNode = False
         self._parameterNodeGuiTag = None
-        # self.ui.applyButton.enabled = True
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -209,7 +209,6 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
-
         # Buttons
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.updateParameterNodeFromGUI)
@@ -255,10 +254,10 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        if not self._parameterNode.inputVolume:
+        if not self._parameterNode.GetNodeReference("inputVolume"):
             firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
             if firstVolumeNode:
-                self._parameterNode.inputVolume = firstVolumeNode
+                self._parameterNode.SetNodeReferenceID('inputVolume', firstVolumeNode.GetID())
 
     def setParameterNode(self, inputParameterNode: Optional[IANBoostParameterNode]) -> None:
         """
@@ -266,17 +265,29 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
 
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        self._parameterNode = inputParameterNode
-        if self._parameterNode:
-            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-            # ui element that needs connection.
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        # if self._parameterNode:
+        #     self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+        #     self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        # self._parameterNode = inputParameterNode
+        # if self._parameterNode:
+        #     # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
+        #     # ui element that needs connection.
+        #     self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
+        #     self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
             # self._checkCanApply()
-            self.updateGUIFromParameterNode()
+
+        if inputParameterNode:
+            self.logic.setDefaultParameters(inputParameterNode)
+
+        # Unobserve previously selected parameter node and add an observer to the newly selected.
+        # Changes of parameter node are observed so that whenever parameters are changed by a script or any other module
+        # those are reflected immediately in the GUI.
+        if self._parameterNode is not None and self.hasObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode):
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+        self._parameterNode = inputParameterNode
+        if self._parameterNode is not None:
+            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+        self.updateGUIFromParameterNode()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
         if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.outputSegmentation:
@@ -294,10 +305,10 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Make sure GUI changes do not call updateParameterNodeFromGUI (it could cause infinite loop)
         self._updatingGUIFromParameterNode = True
         # Update node selectors 
-        self.ui.inputSelector.setCurrentNode(self._parameterNode.GetNodeReference("InputVolume"))
-        self.ui.outputSelector.setCurrentNode(self._parameterNode.GetNodeReference("OutputSegmentation"))
+        self.ui.inputSelector.setCurrentNode(self._parameterNode.GetNodeReference("inputVolume"))
+        self.ui.outputSelector.setCurrentNode(self._parameterNode.GetNodeReference("outputSegmentation"))
 
-        if self._parameterNode.GetNodeReference("InputVolume") and self._parameterNode.GetNodeReference("OutputSegmentation"):  # Both input and output are selected
+        if self._parameterNode.GetNodeReference("inputVolume") and self._parameterNode.GetNodeReference("outputSegmentation"):  # Both input and output are selected
             self.ui.applyButton.enabled = True
 
         # All the GUI updates are done
@@ -310,8 +321,8 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         wasModified = self._parameterNode.StartModify()  # Modify all properties in a single batch
 
         # developer area
-        self._parameterNode.SetNodeReferenceID("InputVolume", self.ui.inputSelector.currentNodeID)
-        self._parameterNode.SetNodeReferenceID("OutputSegmentation", self.ui.outputSelector.currentNodeID)
+        self._parameterNode.SetNodeReferenceID("inputVolume", self.ui.inputSelector.currentNodeID)
+        self._parameterNode.SetNodeReferenceID("outputSegmentation", self.ui.outputSelector.currentNodeID)
 
         self._parameterNode.EndModify(wasModified)
 
@@ -329,8 +340,8 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #     # If additional output volume is selected then result with inverted threshold is written there
             #     self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
             #                        self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
-            
-            self.logic.process_IAN(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode())
+            print("onApplyButton")
+            self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode())
 
 #
 # IANBoostLogic
@@ -351,49 +362,12 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
 
-    def getParameterNode(self):
-        return IANBoostParameterNode(super().getParameterNode())
+    def setDefaultParameters(self, parameterNode) -> None:
+        """Set default parameters to parameter node."""
+        if not parameterNode.GetParameter("inputVolume"):
+            parameterNode.SetParameter("inputVolume", "")
 
     def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
-                imageThreshold: float,
-                invert: bool = False,
-                showResult: bool = True) -> None:
-        """
-        Run the processing algorithm.
-        Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
-        :param outputVolume: thresholding result
-        :param imageThreshold: values above/below this threshold will be set to 0
-        :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
-        :param showResult: show output volume in slice viewers
-        """
-
-        if not inputVolume or not outputVolume:
-            raise ValueError("Input or output volume is invalid")
-
-        import time
-
-        startTime = time.time()
-        logging.info("Processing started")
-
-        # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            "InputVolume": inputVolume.GetID(),
-            "OutputVolume": outputVolume.GetID(),
-            "ThresholdValue": imageThreshold,
-            "ThresholdType": "Above" if invert else "Below",
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
-
-        stopTime = time.time()
-        logging.info(f"Processing completed in {stopTime-startTime:.2f} seconds")
-
-
-    def process_IAN(self,
                 inputVolume: vtkMRMLScalarVolumeNode,
                 outputSeg: vtkMRMLSegmentationNode,
                 showResult: bool = True) -> None:
@@ -411,7 +385,7 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         import time
 
         startTime = time.time()
-        logging.info("Processing started")
+        print("Processing started")
 
         image = slicer.util.arrayFromVolume(inputVolume)
         mandible_seg = self.infer_mandible(image)
@@ -420,7 +394,9 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         slicer.util.updateSegmentBinaryLabelmapFromArray(mandible_seg, outputSeg, segmentId="mandible", referenceVolumeNode=inputVolume)
 
         stopTime = time.time()
-        logging.info(f"Processing completed in {stopTime-startTime:.2f} seconds")
+        print(f"Processing completed in {stopTime-startTime:.2f} seconds")
+
+
 
     def infer_mandible(self, image):
         model_path = os.path.join(os.path.dirname(__file__), "Resources/mandible.pth")
@@ -510,7 +486,7 @@ class IANBoostTest(ScriptedLoadableModuleTest):
         logic = IANBoostLogic()
 
         # Test algorithm with non-inverted threshold
-        logic.process_IAN(inputVolume, outputVolume, True)
+        logic.process(inputVolume, outputVolume, True)
         # logic.process(inputVolume, outputVolume, threshold, True)
         # outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         # self.assertEqual(outputScalarRange[0], inputScalarRange[0])
