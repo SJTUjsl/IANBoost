@@ -4,7 +4,7 @@ from typing import Annotated, Optional
 
 import vtk
 import numpy as np
-
+import SimpleITK as sitk
 import slicer
 from slicer.i18n import tr as _
 from slicer.i18n import translate
@@ -234,10 +234,11 @@ class IANBoostWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def exit(self) -> None:
         """Called each time the user opens a different module."""
         # Do not react to parameter node changes (GUI will be updated when the user enters into the module)
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self._parameterNodeGuiTag = None
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        # if self._parameterNode:
+        #     self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+        #     self._parameterNodeGuiTag = None
+        #     self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
 
     def onSceneStartClose(self, caller, event) -> None:
         """Called just before the scene is closed."""
@@ -392,8 +393,8 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         print("Processing started")
 
         image = slicer.util.arrayFromVolume(inputVolume)
-        mandible_seg = self.infer_mandible(image)
-        print("predicted type: ", type(mandible_seg))
+
+        mandible_seg = self.infer_mandible_with_onnx(image)
         mandible_seg = np.array(mandible_seg)
         slicer.util.updateSegmentBinaryLabelmapFromArray(mandible_seg, outputSeg, segmentId="mandible", referenceVolumeNode=inputVolume)
 
@@ -401,29 +402,31 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         print(f"Processing completed in {stopTime-startTime:.2f} seconds")
 
 
-
-    def infer_mandible(self, image):
-        model_path = os.path.join(os.path.dirname(__file__), "Resources/mandible.onnx")
+    def infer_mandible_with_onnx(self, image):
+        model_path = os.path.join(os.path.dirname(__file__), "Resources/mandible_128.onnx")
 
         # Define transforms for image and segmentation
         transforms = Compose(
             [
                 # LoadImaged(keys=["image"]),
-                EnsureChannelFirstd(keys=["image"], strict_check=False),  # Ensure the channel dimension is first
+                # EnsureChannelFirstd(keys=["image"], strict_check=False),  # Ensure the channel dimension is first
                 EnsureTyped(keys=["image"]),
                 ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=1500, b_min=0.0, b_max=1.0, clip=True),
             ]
         )
+        image = image.transpose(2, 1, 0)
         data = {"image": image}
         transformed_data = transforms(data)
-        # Add batch dimension
         img = transformed_data["image"] # (H, W, D)
-        # meta_data = transformed_data["image_meta_dict"]
 
         post_trans = Compose([Activations(softmax=True), AsDiscrete(threshold=0.5, argmax=True)])
-        pred = sliding_window_infer(img, model_path, window_size=(64, 64, 64), overlap=0.5)
-        pred = post_trans(pred).squeeze()
-        print(pred.shape)
+        pred = sliding_window_infer(img, model_path, window_size=(128, 128, 128), overlap=0.5)
+        # print("prediction shape: ",pred.shape)
+        # pred = pred.squeeze()
+        pred = post_trans(pred)
+        # print("post_trans shape: ",pred.shape)
+        pred = np.array(pred.squeeze())
+        pred = pred.transpose(2, 1, 0)
         return pred
     
 def sliding_window_infer(image, model_path, window_size=(64, 64, 64), overlap=0.5):
