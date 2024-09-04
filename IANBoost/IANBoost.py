@@ -1,7 +1,6 @@
 import logging
 import os
 from typing import Annotated, Optional
-
 import vtk
 import numpy as np
 import SimpleITK as sitk
@@ -34,6 +33,8 @@ try:
         ScaleIntensityRanged,
     )
     import onnxruntime as ort
+    import skimage.morphology as morphology
+    import matplotlib.pyplot as plt
 except:
     try:
         import PyTorchUtils
@@ -48,6 +49,8 @@ except:
     slicer.util.pip_install('monai torch torchvision torchaudio')
     slicer.util.pip_install('nibabel')
     slicer.util.pip_install('onnxruntime')
+    slicer.util.pip_install('scikit-image')
+    slicer.util.pip_install('matplotlib')
     from PIL import Image
     import torch
     import torch.nn as nn
@@ -64,6 +67,7 @@ except:
         ScaleIntensityRanged,
     )
     import onnxruntime as ort
+from Resources.utils import Slices
 
 #
 # IANBoost
@@ -397,7 +401,10 @@ class IANBoostLogic(ScriptedLoadableModuleLogic):
         mandible_seg = self.infer_mandible_with_onnx(image)
         mandible_seg = np.array(mandible_seg)
         slicer.util.updateSegmentBinaryLabelmapFromArray(mandible_seg, outputSeg, segmentId="mandible", referenceVolumeNode=inputVolume)
-
+        my_slices = Slices(image, mandible_seg)
+        slices, aug_dict = my_slices.process()
+        print("slices shape: ", len(slices))
+        print("aug_dict: ", aug_dict)
         stopTime = time.time()
         print(f"Processing completed in {stopTime-startTime:.2f} seconds")
 
@@ -468,6 +475,7 @@ def sliding_window_infer(image, model_path, window_size=(64, 64, 64), overlap=0.
     combined_output /= np.maximum(counts, 1)
 
     return combined_output
+
 #
 # IANBoostTest
 #
